@@ -1,0 +1,16 @@
+# Python caches
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Ignore heavy data and models (paths are now relative to the code folder)
+data/
+models_3channel/
+
+# IDE files
+.vscode/
+.idea/
