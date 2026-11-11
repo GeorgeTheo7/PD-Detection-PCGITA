@@ -1,16 +1,24 @@
-# Python caches
+# Python
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
 
 # Virtual environments
 venv/
 env/
 .venv/
 
-# Ignore heavy data and models (paths are now relative to the code folder)
+# Data, features, checkpoints and run outputs (PC-GITA cannot be redistributed)
 data/
-models_3channel/
+outputs/
+*.wav
+*.npy
+*.pth
+*.pt
+*.zip
 
-# IDE files
+# IDE / OS
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,11 @@
+torch>=2.1
+torchaudio>=2.1
+torchvision>=0.16
+transformers>=4.40
+numpy
+pandas
+scikit-learn>=1.3
+soundfile
+librosa
+openpyxl
+matplotlib

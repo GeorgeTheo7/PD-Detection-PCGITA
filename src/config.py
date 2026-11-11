@@ -1,31 +1,43 @@
-import torch
-import os
+"""Central configuration: audio/feature settings, model and training hyperparameters.
 
-########Εδώ ορίζω όλα τα paths και τα hyperparameters
+Paths are NOT hardcoded here; they are passed on the command line (see main.py).
+"""
 
-#PATHS
-EXPERIMENT_ROOT = "/mnt/datadrive/gtheodosiou/projects/thesis1/PCGITA_Experiment"
+# ---------------- Audio / chunking ----------------
+TARGET_SR = 16_000            # all audio resampled to 16 kHz (required by Wav2Vec2)
+CHUNK_SEC = 5.0               # non-overlapping 5 s chunks
+CHUNK_SAMPLES = int(TARGET_SR * CHUNK_SEC)   # 80,000 samples
+MIN_VALID_SEC = 2.5           # trailing chunks shorter than this are dropped
 
-#Data paths
-DATA_DIR = os.path.join(EXPERIMENT_ROOT, "data", "processed")
-CSV_PATH = os.path.join(DATA_DIR, "pcgita_combined_5s_rich.csv") #PCGITA combined csv containing all data info
-CHUNKS_DIR = os.path.join(DATA_DIR, "chunks", "chunks")
+# PC-GITA tasks used (connected speech only)
+TASKS = {
+    "read_text": "read text/ayerfuialmedico/sin normalizar",
+    "monologue": "monologue/sin normalizar",
+}
+CLASS_DIRS = {"hc": 0, "pd": 1}  # sub-folder name -> label (0 = healthy control, 1 = Parkinson's)
 
-#Saving Results
-SAVE_MODEL_DIR = os.path.join(EXPERIMENT_ROOT, "models_3channel")
-os.makedirs(SAVE_MODEL_DIR, exist_ok=True)
+# Speaker ID at the start of every PC-GITA filename, e.g. AVPEPUDEA0001 (PD) / AVPEPUDEAC0001 (HC)
+SUBJECT_ID_REGEX = r"^(AVPEPUDEAC?\d{4})"
 
-#HYPERPARAMETERS
-TARGET_SR = 16000 #all audio will be resampled to 16kHz
-CHUNK_SEC = 5.0 
-CHUNK_SAMPLES = int(TARGET_SR * CHUNK_SEC) #the expected number of samples in each chunk
-MAX_LEN = 80000
+# ---------------- Features ----------------
+N_FFT = 1024
+WIN_LENGTH = int(0.040 * TARGET_SR)   # 40 ms window
+HOP_LENGTH = int(0.010 * TARGET_SR)   # 10 ms hop
+N_MELS = 200
+N_MFCC = 40
+IMG_SIZE = (224, 224)                 # ResNet-18 input size
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
-BATCH_SIZE = 64 #number of samples per training batch
+WAV2VEC2_ID = "facebook/wav2vec2-large-xlsr-53-spanish"   # frozen, used as a feature extractor
+
+# ---------------- Training (thesis protocol) ----------------
+N_FOLDS = 5             # outer speaker-independent folds
+ES_FRAC = 0.15          # fraction of training speakers held out for early stopping
+BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
-N_EPOCHS = 15
-N_FOLDS = 5 #5 fold cross-validation
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 42
-NUM_WORKERS = 4
-IMG_SIZE = (224, 224) #input image size for ResNet (resnet was trained on 224x224 images)
+MAX_EPOCHS = 15
+PATIENCE = 3            # epochs without improvement on the early-stopping set
+GRAD_CLIP = 1.0
+DECISION_THRESHOLD = 0.5
+DEFAULT_SEEDS = [42, 1, 2, 3, 4]

@@ -1,207 +1,131 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score,
-    f1_score, confusion_matrix, roc_curve, auc, roc_auc_score
-)
+"""Subject-level evaluation: per-fold metrics, multi-seed summary, confusion matrix and ROC plots."""
+import glob
 import os
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score, precision_score,
+                             recall_score, roc_auc_score, roc_curve)
+
 from . import config
 
-#Υπολογίζουμε τις τελικές μετρικές για όλα τα folds
+METRICS = ["Accuracy", "Precision", "Recall", "Specificity", "F1", "AUC"]
 
 
-def run_evaluation():
+def subject_level(preds, threshold=config.DECISION_THRESHOLD):
+    """Average chunk probabilities per speaker -> (true label, P(PD), predicted label), indexed by speaker."""
+    p = preds.copy()
+    p["subject_id"] = p["subject_id"].astype(str)
+    score = p.groupby("subject_id")["prob_pd"].mean()
+    label = p.groupby("subject_id")["label"].first()
+    return label, score, (score > threshold).astype(int)
 
-    SAVE_DIR = config.SAVE_MODEL_DIR
-    N_FOLDS = config.N_FOLDS
 
-    #Storage for metrics across folds
-    metrics = {
-        'Accuracy': [],
-        'Precision': [],
-        'Recall': [],
-        'F1': [],
-        'Specificity': [],
-        'AUC': []
-    }
+def fold_metrics(preds):
+    y, score, pred = subject_level(preds)
+    tn, fp, fn, tp = confusion_matrix(y, pred, labels=[0, 1]).ravel()
+    return {"Accuracy": accuracy_score(y, pred), "Precision": precision_score(y, pred, zero_division=0),
+            "Recall": recall_score(y, pred, zero_division=0), "Specificity": tn / (tn + fp),
+            "F1": f1_score(y, pred, zero_division=0), "AUC": roc_auc_score(y, score),
+            "TP": tp, "FN": fn, "TN": tn, "FP": fp}
 
-    #Storage for ROC plotting
-    tprs = []
-    aucs = []
-    mean_fpr = np.linspace(0, 1, 100)
 
-    print("\n" + "=" * 40)
-    print("=== STARTING EVALUATION ===")
-    print("=" * 40)
-    print(f"Loading predictions from: {SAVE_DIR}")
+def load_run(run_dir):
+    files = sorted(glob.glob(os.path.join(run_dir, "preds_fold*.csv")))
+    if not files:
+        raise FileNotFoundError(f"No preds_fold*.csv in {run_dir}")
+    return {int(os.path.basename(f)[len("preds_fold"):-4]): pd.read_csv(f) for f in files}
 
-    fold_metrics_list = []
 
-    for fold_idx in range(N_FOLDS):
-        file_path = os.path.join(SAVE_DIR, f"preds_fold{fold_idx}.csv")
-        if not os.path.exists(file_path):
-            print(f"⚠️ Missing file: {file_path}")
+def evaluate_run(run_dir, make_plots=True):
+    """Per-fold table + mean ± std for one run (one seed)."""
+    preds = load_run(run_dir)
+    res = pd.DataFrame([{"Fold": k, **fold_metrics(p)} for k, p in sorted(preds.items())])
+    res.to_csv(os.path.join(run_dir, "per_fold_metrics.csv"), index=False)
+
+    print(f"\n=== {run_dir} ===")
+    print(res.round(4).to_string(index=False))
+    print("\nMean ± std over folds:")
+    for m in METRICS:
+        print(f"  {m:<12} {res[m].mean():.4f} ± {res[m].std(ddof=0):.4f}")
+
+    print("\nPer task (same models, one task's chunks per speaker):")
+    for task in sorted(pd.concat(preds.values())["task"].unique()):
+        acc = [fold_metrics(p[p["task"] == task])["Accuracy"] for p in preds.values()]
+        auc = [fold_metrics(p[p["task"] == task])["AUC"] for p in preds.values()]
+        print(f"  {task:<10} Acc {np.mean(acc):.4f} ± {np.std(acc):.4f} | AUC {np.mean(auc):.4f} ± {np.std(auc):.4f}")
+
+    if make_plots:
+        plot_confusion_matrix(preds, os.path.join(run_dir, "confusion_matrix.png"))
+        plot_roc(preds, os.path.join(run_dir, "roc_curve.png"))
+    return res
+
+
+def summarize_runs(runs_dir):
+    """Multi-seed summary: one row per run (mean over folds), then mean ± std across seeds."""
+    rows = []
+    for run_dir in sorted(glob.glob(os.path.join(runs_dir, "es_*_seed*"))):
+        name = os.path.basename(run_dir)                     # es_<mode>_seed<seed>
+        mode, seed = name[3:].rsplit("_seed", 1)
+        preds = load_run(run_dir)
+        if len(preds) < config.N_FOLDS:
+            print(f"Skipping incomplete run {name} ({len(preds)}/{config.N_FOLDS} folds)")
             continue
+        fm = pd.DataFrame([fold_metrics(p) for p in preds.values()])
+        rows.append({"ES": mode, "Seed": int(seed), **fm[METRICS].mean().to_dict()})
+    summary = pd.DataFrame(rows)
+    summary.to_csv(os.path.join(runs_dir, "multiseed_summary.csv"), index=False)
+    print("\nPer seed (mean over 5 folds):")
+    print(summary.round(4).to_string(index=False))
+    print("\nMean ± std across seeds:")
+    print(summary.groupby("ES")[METRICS].agg(["mean", "std"]).round(4).to_string())
+    return summary
 
-        df = pd.read_csv(file_path)
 
-        #Aggregate by Subject (Mean Probability)
-        df['subject_id'] = df['subject_id'].astype(str)
+def plot_confusion_matrix(preds, path):
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import ConfusionMatrixDisplay
 
-        subject_scores = df.groupby('subject_id')['prob_pd'].mean()
-        subject_labels = df.groupby('subject_id')['label'].first()
+    ys, ps = [], []
+    for p in preds.values():
+        y, _, pred = subject_level(p)
+        ys += list(y)
+        ps += list(pred)
+    cm = confusion_matrix(ys, ps, labels=[0, 1])
+    fig, ax = plt.subplots(figsize=(5, 4.5))
+    ConfusionMatrixDisplay(cm, display_labels=["Healthy", "Parkinson's"]).plot(ax=ax, cmap="Greens", colorbar=False)
+    ax.set_title(f"Subject-level confusion matrix\n({len(ys)} speakers, pooled over folds)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
 
-        #Diagnosis
-        subject_preds = (subject_scores > 0.5).astype(int)
 
-        #Calculate Metrics for this Fold
-        acc = accuracy_score(subject_labels, subject_preds)
-        prec = precision_score(subject_labels, subject_preds, zero_division=0)
-        rec = recall_score(subject_labels, subject_preds, zero_division=0)  # Sensitivity
-        f1 = f1_score(subject_labels, subject_preds, zero_division=0)
+def plot_roc(preds, path):
+    import matplotlib.pyplot as plt
 
-        # Calculate AUC
-        try:
-            fold_auc = roc_auc_score(subject_labels, subject_scores)
-        except:
-            fold_auc = 0.5
-
-        # Specificity (True Negative Rate)
-        tn, fp, fn, tp = confusion_matrix(subject_labels, subject_preds).ravel()
-        spec = tn / (tn + fp + 1e-9)
-
-        # Store
-        metrics['Accuracy'].append(acc)
-        metrics['Precision'].append(prec)
-        metrics['Recall'].append(rec)
-        metrics['F1'].append(f1)
-        metrics['Specificity'].append(spec)
-        metrics['AUC'].append(fold_auc)
-
-        fold_metrics_list.append({
-            'Fold': fold_idx + 1,
-            'Acc': acc, 'Prec': prec, 'Rec': rec, 'F1': f1, 'Spec': spec, 'AUC': fold_auc
-        })
-
-        print(f"Fold {fold_idx + 1} -> Acc: {acc:.4f} | F1: {f1:.4f} | AUC: {fold_auc:.4f}")
-
-        #Prepare ROC Data
-        fpr, tpr, _ = roc_curve(subject_labels, subject_scores)
-        aucs.append(fold_auc)
-        # Interpolate to smooth the curve for averaging
-        interp_tpr = np.interp(mean_fpr, fpr, tpr)
-        interp_tpr[0] = 0.0
-        tprs.append(interp_tpr)
-
-    print("\n" + "-" * 20)
-    print("PER-FOLD RESULTS:")
-    print("-" * 20)
-    df_res = pd.DataFrame(fold_metrics_list)
-    if not df_res.empty:
-        print(df_res.round(4).to_string(index=False))
-
-    print("\n" + "=" * 40)
-    print("🏆 FINAL POOLED RESULTS (Mean ± Std)")
-    print("=" * 40)
-    for metric, values in metrics.items():
-        if values:
-            print(f"{metric:<12}: {np.mean(values):.4f} ± {np.std(values):.4f}")
-
-    #CONFUSION MATRIX (Aggregated)
-    print("\nGenerating Confusion Matrix...")
-    plt.figure(figsize=(6, 5))
-    all_preds = []
-    all_labels = []
-
-    for fold_idx in range(N_FOLDS):
-        file_path = os.path.join(SAVE_DIR, f"preds_fold{fold_idx}.csv")
-        if os.path.exists(file_path):
-            df = pd.read_csv(file_path)
-            df['subject_id'] = df['subject_id'].astype(str)
-            scores = df.groupby('subject_id')['prob_pd'].mean()
-            labels = df.groupby('subject_id')['label'].first()
-            preds = (scores > 0.5).astype(int)
-            all_preds.extend(preds)
-            all_labels.extend(labels)
-
-    if all_labels:
-        cm = confusion_matrix(all_labels, all_preds)
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Greens',
-                    xticklabels=['Healthy', 'Parkinson'],
-                    yticklabels=['Healthy', 'Parkinson'])
-        plt.ylabel('True Label')
-        plt.xlabel('Predicted Label')
-        plt.title('Aggregated Confusion Matrix')
-
-        # Save Plot
-        cm_path = os.path.join(SAVE_DIR, "confusion_matrix.png")
-        plt.savefig(cm_path)
-        print(f"✅ Confusion Matrix saved to: {cm_path}")
-        plt.close()
-
-    #ROC CURVE
-    print("Generating ROC Curve...")
-    plt.figure(figsize=(8, 6))
-
+    grid = np.linspace(0, 1, 101)
+    tprs, aucs = [], []
+    fig, ax = plt.subplots(figsize=(5.5, 5))
+    for k, p in sorted(preds.items()):
+        y, score, _ = subject_level(p)
+        fpr, tpr, _ = roc_curve(y, score)
+        auc = roc_auc_score(y, score)
+        ax.plot(fpr, tpr, lw=1, alpha=0.35, label=f"Fold {k} (AUC {auc:.3f})")
+        t = np.interp(grid, fpr, tpr)
+        t[0] = 0.0
+        tprs.append(t)
+        aucs.append(auc)
     mean_tpr = np.mean(tprs, axis=0)
     mean_tpr[-1] = 1.0
-    mean_auc = auc(mean_fpr, mean_tpr)
-    std_auc = np.std(aucs)
-
-    plt.plot(mean_fpr, mean_tpr, color='green',
-             label=r'Mean ROC (AUC = %0.4f $\pm$ %0.2f)' % (mean_auc, std_auc),
-             lw=2, alpha=.8)
-
-    # Plot Chance Line
-    plt.plot([0, 1], [0, 1], linestyle='--', lw=2, color='r', label='Chance', alpha=.8)
-
-    # Plot Std Dev (Shading)
     std_tpr = np.std(tprs, axis=0)
-    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
-    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
-    plt.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
-                     label=r'$\pm$ 1 std. dev.')
-
-    plt.xlim([-0.05, 1.05])
-    plt.ylim([-0.05, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic (ROC)')
-    plt.legend(loc="lower right")
-
-    # Save Plot
-    roc_path = os.path.join(SAVE_DIR, "roc_curve.png")
-    plt.savefig(roc_path)
-    print(f"✅ ROC Curve saved to: {roc_path}")
-    plt.close()
-
-    #REPORT
-    report_path = os.path.join(SAVE_DIR, "final_clinical_report.txt")
-    with open(report_path, "w") as f:
-        f.write("========================================\n")
-        f.write("=== FINAL CLINICAL METRICS REPORT ===\n")
-        f.write("========================================\n\n")
-
-        f.write("PER-FOLD RESULTS:\n")
-        if not df_res.empty:
-            f.write(df_res.round(4).to_string(index=False))
-        else:
-            f.write("No fold data available.")
-        f.write("\n\n")
-
-        f.write("========================================\n")
-        f.write("🏆 POOLED RESULTS (Mean ± Std)\n")
-        f.write("========================================\n")
-        for metric, values in metrics.items():
-            if values:
-                mean_val = np.mean(values)
-                std_val = np.std(values)
-                f.write(f"{metric:<12}: {mean_val:.4f} ± {std_val:.4f}\n")
-
-    print(f"\n✅ Detailed report saved to: {report_path}")
-
-
-if __name__ == "__main__":
-    run_evaluation()
+    ax.plot(grid, mean_tpr, color="green", lw=2.5, label=f"Mean (AUC {np.mean(aucs):.3f} ± {np.std(aucs):.3f})")
+    ax.fill_between(grid, np.maximum(mean_tpr - std_tpr, 0), np.minimum(mean_tpr + std_tpr, 1),
+                    color="grey", alpha=0.2)
+    ax.plot([0, 1], [0, 1], "--", color="red", alpha=0.6, label="Chance")
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.set_title("Subject-level ROC")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
