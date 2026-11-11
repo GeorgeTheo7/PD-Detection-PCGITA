@@ -126,7 +126,7 @@ python main.py evaluate
 Outputs go to `outputs/runs/es_<criterion>_seed<seed>/`: per-fold predictions, logs, metrics and plots.
 Training is resumable, so finished folds are skipped.
 
-The whole pipeline runs on a free Colab T4 in about 15–20 minutes. See
+The whole pipeline runs on a free Colab T4. See
 [`notebooks/run_on_colab.ipynb`](notebooks/run_on_colab.ipynb).
 
 ## References
