@@ -5,8 +5,8 @@ It combines three views of the same 5-second speech segment: a **spectrogram ima
 **MFCC sequence** (BiLSTM) and **self-supervised Wav2Vec 2.0 embeddings**. A **co-attention** mechanism
 uses the first two to decide which Wav2Vec2 frames matter most.
 
-This repository contains the PC-GITA experiment from my diploma thesis *"Parkinson's Disease Detection
-Using Speech"* (National Technical University of Athens, 2026). It is evaluated with a strict
+This work is based on my diploma thesis *"Parkinson's Disease Detection Using Speech"*
+(National Technical University of Athens, 2026). It is evaluated with a strict
 **speaker-independent** protocol, so no speaker ever appears in both training and test data.
 
 <p align="center"><img src="docs/architecture.png" width="520" alt="Model architecture"></p>
@@ -58,18 +58,6 @@ Spontaneous speech (monologue) is more informative than reading, and combining b
 - With 20 test speakers per fold, one speaker equals 5% accuracy, so per-fold variance is high. Some PD speakers
   (mostly in fold 4) are missed in almost every run.
 - PC-GITA is small (100 speakers, one language, one recording setup). Generalization to other corpora is not shown here.
-
-### Note on the thesis numbers
-
-The thesis reports 89.0% accuracy and 0.959 AUC. While preparing this repository I found a bug in the original
-preprocessing. Speaker IDs were parsed with `filename.split("_")`, which failed for the monologue files
-(`AVPEPUDEA0001-Monologo-NR.wav`). Each speaker was therefore counted as two different "subjects", one per task,
-and the read-text and monologue recordings of the same person could end up in different folds.
-
-This repository fixes the bug: IDs are parsed with a regex, and the code asserts that there are exactly 50 + 50
-speakers and no overlap between splits. All results above use the corrected pipeline. The thesis code also
-fine-tuned the Wav2Vec2 Transformer layers, whereas here Wav2Vec2 is **fully frozen**, as described in the thesis
-text. The core result held up: accuracy is slightly lower (86.4% vs 89.0%) and the AUC is unchanged (0.962 vs 0.959).
 
 ## Method
 
@@ -140,19 +128,6 @@ Training is resumable, so finished folds are skipped.
 
 The whole pipeline runs on a free Colab T4 in about 15–20 minutes. See
 [`notebooks/run_on_colab.ipynb`](notebooks/run_on_colab.ipynb).
-
-## Citation
-
-```bibtex
-@mastersthesis{theodosiou2026pd,
-  author = {Theodosiou, Georgios},
-  title  = {Parkinson's Disease Detection Using Speech},
-  school = {National Technical University of Athens, School of Electrical and Computer Engineering},
-  type   = {Diploma thesis},
-  year   = {2026},
-  note   = {In Greek. Supervisor: Prof. Dimitrios Askounis}
-}
-```
 
 ## References
 - J. R. Orozco-Arroyave, J. D. Arias-Londoño, J. F. Vargas-Bonilla, M. C. González-Rátiva, E. Nöth.
