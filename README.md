@@ -87,17 +87,33 @@ frames, and their weighted sum (1024-d) is concatenated with the global context 
   on the same chunk files reproduced the main run exactly. Regenerating the chunks from scratch can change the row
   order, and therefore the batch order, so expect small differences in that case.
 
+## Ablation studies
+
+The code includes every ablation variant, defined in [`src/experiments.py`](src/experiments.py). All variants use
+the same folds, seeds and training protocol as the main model:
+
+| Study | Variants |
+|---|---|
+| SSL backbone (co-attention, all branches) | wav2vec2 XLSR-53, HuBERT Base, wav2vec2 Base (all frozen) |
+| Fusion method | Co-attention, concatenation, MLB (low-rank bilinear), MFB (factorized bilinear) |
+| Input modalities | All three, Spectrogram + SSL, MFCC + SSL, SSL only, Spectrogram + MFCC (no SSL) |
+
+`python main.py ablations` reports mean ± std across seeds for every variant, with a Wilcoxon signed-rank
+test against the reference model. The test pairs the 25 seed×fold results, which is valid because every
+variant is evaluated on exactly the same test speakers.
+
 ## Repository structure
 
 ```
-├── main.py                    # CLI: prepare | extract | train | evaluate
+├── main.py                    # CLI: prepare | extract | train | evaluate | ablations
 ├── src/
 │   ├── config.py              # audio, feature and training settings
 │   ├── preprocess.py          # task selection, resampling, 5 s chunking, speaker IDs
-│   ├── features.py            # Wav2Vec2 feature caching, spectrogram and MFCC computation
-│   ├── models.py              # ResNet-18 / BiLSTM / co-attention model
+│   ├── features.py            # SSL feature caching, spectrogram and MFCC computation
+│   ├── models.py              # ResNet-18 / BiLSTM encoders, co-attention and ablation fusions
+│   ├── experiments.py         # main model + ablation variants
 │   ├── cv.py                  # nested speaker-independent cross-validation
-│   └── evaluate.py            # subject-level metrics, multi-seed summary, plots
+│   └── evaluate.py            # subject-level metrics, multi-seed summary, ablation tables, plots
 ├── splits/pcgita_outer_folds.csv
 ├── notebooks/run_on_colab.ipynb
 ├── results/                   # metrics and figures reported above
@@ -119,12 +135,19 @@ Universidad de Antioquia (Orozco-Arroyave et al., 2014). Keep the original folde
 pip install -r requirements.txt
 
 python main.py prepare  --raw-dir <PCGITA_ROOT> [--metadata <PCGITA_metadata.xlsx>]
-python main.py extract                                   # frozen Wav2Vec2 features (~1 min on a T4)
-python main.py train    --seeds 42 1 2 3 4 --es f1       # add "--es f1 loss" for the ablation
-python main.py evaluate
+python main.py extract  --ssl xlsr53                          # frozen SSL features (~1 min on a T4)
+python main.py train    --experiments coattn_xlsr53           # 5 seeds by default
+python main.py evaluate --experiment coattn_xlsr53
 ```
-Outputs go to `outputs/runs/es_<criterion>_seed<seed>/`: per-fold predictions, logs, metrics and plots.
-Training is resumable, so finished folds are skipped.
+Outputs go to `outputs/runs/<experiment>/seed<seed>/`: per-fold predictions, logs, metrics and plots.
+Training is resumable, so finished folds are skipped. Add `--es loss` to `train` for the early-stopping ablation.
+
+To run all ablation variants and build the ablation tables:
+```bash
+python main.py extract   --ssl all
+python main.py train     --experiments all
+python main.py ablations                                       # tables + Wilcoxon tests
+```
 
 The whole pipeline runs on a free Colab T4. See
 [`notebooks/run_on_colab.ipynb`](notebooks/run_on_colab.ipynb).

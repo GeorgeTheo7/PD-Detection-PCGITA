@@ -29,7 +29,13 @@ IMG_SIZE = (224, 224)                 # ResNet-18 input size
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-WAV2VEC2_ID = "facebook/wav2vec2-large-xlsr-53-spanish"   # frozen, used as a feature extractor
+# Frozen self-supervised (SSL) speech models, used only as feature extractors
+SSL_MODELS = {
+    "xlsr53":    {"id": "facebook/wav2vec2-large-xlsr-53-spanish", "dim": 1024},
+    "hubert":    {"id": "facebook/hubert-base-ls960",              "dim": 768},
+    "w2v2_base": {"id": "facebook/wav2vec2-base-960h",             "dim": 768},
+}
+DEFAULT_SSL = "xlsr53"
 
 # ---------------- Training (thesis protocol) ----------------
 N_FOLDS = 5             # outer speaker-independent folds

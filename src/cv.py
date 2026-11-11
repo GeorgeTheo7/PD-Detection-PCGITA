@@ -20,7 +20,7 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
 
 from . import config
 from .evaluate import subject_level
-from .models import CoAttentionModel
+from .models import FusionModel
 
 
 def set_seed(seed):
@@ -50,24 +50,34 @@ def outer_folds(df, folds_csv=None):
 
 
 class FeatureStore:
-    """All features in memory (CPU); batches are moved to the GPU on demand."""
+    """All features in memory (CPU); batches are moved to the GPU on demand.
 
-    def __init__(self, df, spec, mfcc, w2v, device):
-        self.df, self.spec, self.mfcc, self.w2v, self.device = df, spec, mfcc, w2v, device
+    ssl: dict {ssl_name: tensor [N, T, D]} with the cached frozen SSL features that are needed.
+    """
+
+    def __init__(self, df, spec, mfcc, ssl, device):
+        self.df, self.spec, self.mfcc, self.ssl, self.device = df, spec, mfcc, ssl, device
         self.labels = torch.tensor(df["label"].values, dtype=torch.long)
 
-    def batch(self, idx):
+    def batch(self, idx, cfg):
         t = torch.from_numpy(np.asarray(idx))
-        return (self.spec[t].float().to(self.device), self.mfcc[t].to(self.device),
-                self.w2v[t].float().to(self.device), self.labels[t].to(self.device))
+        s = self.spec[t].float().to(self.device) if cfg["use_spec"] else None
+        m = self.mfcc[t].to(self.device) if cfg["use_mfcc"] else None
+        w = self.ssl[cfg["ssl"]][t].float().to(self.device) if cfg["ssl"] else None
+        return s, m, w, self.labels[t].to(self.device)
+
+
+def build_model(cfg, device):
+    ssl_dim = config.SSL_MODELS[cfg["ssl"]]["dim"] if cfg["ssl"] else 768
+    return FusionModel(cfg["fusion"], cfg["use_spec"], cfg["use_mfcc"], ssl_dim).to(device)
 
 
 @torch.no_grad()
-def predict(model, store, idx):
+def predict(model, store, idx, cfg):
     model.eval()
     probs = []
     for i in range(0, len(idx), config.BATCH_SIZE):
-        s, m, w, _ = store.batch(idx[i:i + config.BATCH_SIZE])
+        s, m, w, _ = store.batch(idx[i:i + config.BATCH_SIZE], cfg)
         probs.append(torch.softmax(model(s, m, w), dim=1)[:, 1].cpu())
     out = store.df.iloc[idx][["filename", "subject_id", "task", "label"]].copy()
     out["prob_pd"] = torch.cat(probs).numpy()
@@ -86,8 +96,11 @@ def early_stopping_score(preds, mode):
     raise ValueError(f"Unknown early-stopping mode: {mode}")
 
 
-def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
-    """Train/evaluate all outer folds; skips folds whose predictions already exist (resumable)."""
+def run_cv(store, out_dir, cfg, seed=42, es_mode="f1", folds_csv=None, verbose=True, tag=""):
+    """Train/evaluate all outer folds of one experiment and seed.
+
+    cfg: experiment config from src/experiments.py. Skips folds whose predictions already exist (resumable).
+    """
     os.makedirs(out_dir, exist_ok=True)
     df = store.df
     subj = df["subject_id"].astype(str).values
@@ -95,7 +108,7 @@ def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
     for k, trval, test in outer_folds(df, folds_csv):
         pred_path = os.path.join(out_dir, f"preds_fold{k}.csv")
         if os.path.exists(pred_path):
-            print(f"[seed {seed} | {es_mode}] fold {k}: already done, skipping")
+            print(f"[{tag} seed {seed} | {es_mode}] fold {k}: already done, skipping")
             continue
 
         fold_seed = seed + k - 1
@@ -112,10 +125,10 @@ def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
         assert tr_set.isdisjoint(es_set) and tr_set.isdisjoint(te_set) and es_set.isdisjoint(te_set), \
             "Speaker leakage between splits!"
         if verbose:
-            print(f"\n[seed {seed} | {es_mode}] FOLD {k} | speakers train={len(tr_set)} "
+            print(f"\n[{tag} seed {seed} | {es_mode}] FOLD {k} | speakers train={len(tr_set)} "
                   f"early-stop={len(es_set)} test={len(te_set)}")
 
-        model = CoAttentionModel().to(store.device)
+        model = build_model(cfg, store.device)
         opt = torch.optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
         crit = nn.CrossEntropyLoss()
         gen = torch.Generator().manual_seed(fold_seed)
@@ -127,14 +140,14 @@ def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
             total = 0.0
             order = tr_idx[torch.randperm(len(tr_idx), generator=gen).numpy()]
             for i in range(0, len(order), config.BATCH_SIZE):
-                s, m, w, y = store.batch(order[i:i + config.BATCH_SIZE])
+                s, m, w, y = store.batch(order[i:i + config.BATCH_SIZE], cfg)
                 opt.zero_grad(set_to_none=True)
                 loss = crit(model(s, m, w), y)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.GRAD_CLIP)
                 opt.step()
                 total += loss.item() * len(y)
-            score = early_stopping_score(predict(model, store, es_idx), es_mode)
+            score = early_stopping_score(predict(model, store, es_idx, cfg), es_mode)
             if verbose:
                 print(f"  ep {ep:02d} | train loss {total / len(tr_idx):.4f} | "
                       f"early-stop {es_mode} {score:.4f} | {time.time() - t0:.0f}s")
@@ -148,7 +161,7 @@ def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
 
         # Evaluate the best epoch ONCE on the untouched outer test fold
         model.load_state_dict(best_state)
-        preds = predict(model, store, test)
+        preds = predict(model, store, test, cfg)
         preds.to_csv(pred_path, index=False)
 
         y, score_s, pred_s = subject_level(preds)
@@ -157,5 +170,5 @@ def run_cv(store, out_dir, seed=42, es_mode="f1", folds_csv=None, verbose=True):
                "test_auc": roc_auc_score(y, score_s)}
         with open(os.path.join(out_dir, f"log_fold{k}.json"), "w") as f:
             json.dump(log, f, indent=2)
-        print(f"[seed {seed} | {es_mode}] fold {k}: best epoch {best_ep} | test acc {log['test_accuracy']:.2f} "
+        print(f"[{tag} seed {seed} | {es_mode}] fold {k}: best epoch {best_ep} | test acc {log['test_accuracy']:.2f} "
               f"| recall {log['test_recall']:.2f} | AUC {log['test_auc']:.3f}")

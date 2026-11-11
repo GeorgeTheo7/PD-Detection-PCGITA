@@ -1,6 +1,6 @@
 """Feature computation for the three branches.
 
-* Wav2Vec2 (frozen)  -> computed once and cached to disk (.npy, float16)
+* SSL model (frozen: wav2vec2 XLSR-53 / HuBERT / wav2vec2 Base) -> computed once, cached to disk (.npy, float16)
 * Spectrogram image  -> [3, 224, 224]: log-Mel, delta, delta-delta (ImageNet-normalised)
 * MFCC sequence      -> [T, 40]
 Spectrograms and MFCCs are deterministic and cheap, so they are recomputed in memory at train time.
@@ -36,13 +36,21 @@ def _batches(df, chunk_dir, bs):
         yield i, np.stack([load_wav(os.path.join(chunk_dir, n)) for n in names])
 
 
-@torch.no_grad()
-def extract_wav2vec2(csv_path, chunk_dir, out_path, device="cuda", batch_size=16):
-    """Run the frozen Wav2Vec2 model once over all chunks; save [N, T, 1024] float16 in CSV row order."""
-    from transformers import Wav2Vec2Model
+def ssl_feature_path(features_dir, ssl):
+    return os.path.join(features_dir, f"{ssl}_fp16.npy")
 
+
+@torch.no_grad()
+def extract_ssl(csv_path, chunk_dir, features_dir, ssl=config.DEFAULT_SSL, device="cuda", batch_size=16):
+    """Run a frozen SSL model once over all chunks; save [N, T, D] float16 in CSV row order."""
+    from transformers import AutoModel
+
+    out_path = ssl_feature_path(features_dir, ssl)
+    if os.path.exists(out_path):
+        print(f"{out_path} already exists, skipping")
+        return out_path
     df = pd.read_csv(csv_path)
-    model = Wav2Vec2Model.from_pretrained(config.WAV2VEC2_ID).to(device).eval()
+    model = AutoModel.from_pretrained(config.SSL_MODELS[ssl]["id"]).to(device).eval()
     feats, t0 = None, time.time()
     use_amp = device.startswith("cuda")
     for i, x in _batches(df, chunk_dir, batch_size):
@@ -51,9 +59,10 @@ def extract_wav2vec2(csv_path, chunk_dir, out_path, device="cuda", batch_size=16
         if feats is None:
             feats = np.zeros((len(df), out.shape[1], out.shape[2]), dtype=np.float16)
         feats[i:i + len(x)] = out.float().cpu().numpy().astype(np.float16)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    os.makedirs(features_dir, exist_ok=True)
     np.save(out_path, feats)
-    print(f"Wav2Vec2 features {feats.shape} saved to {out_path} ({time.time() - t0:.0f}s)")
+    print(f"{ssl}: features {feats.shape} saved to {out_path} ({time.time() - t0:.0f}s)")
+    del model
     return out_path
 
 

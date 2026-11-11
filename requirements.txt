@@ -9,3 +9,4 @@ soundfile
 librosa
 openpyxl
 matplotlib
+scipy
