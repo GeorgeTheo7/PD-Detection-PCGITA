@@ -89,18 +89,50 @@ frames, and their weighted sum (1024-d) is concatenated with the global context 
 
 ## Ablation studies
 
-The code includes every ablation variant, defined in [`src/experiments.py`](src/experiments.py). All variants use
-the same folds, seeds and training protocol as the main model:
+Every variant uses the same folds, seeds and training protocol as the main model; the variants are defined in
+[`src/experiments.py`](src/experiments.py). The reference for the ablations is the co-attention model with a
+frozen **HuBERT Base** backbone. Values are **mean ± std across 5 seeds** (each seed is the mean over 5 folds),
+in %. *p* is a Wilcoxon signed-rank test against the reference, pairing the 25 seed×fold results. This is valid
+because every variant is tested on exactly the same speakers.
 
-| Study | Variants |
-|---|---|
-| SSL backbone (co-attention, all branches) | wav2vec2 XLSR-53, HuBERT Base, wav2vec2 Base (all frozen) |
-| Fusion method | Co-attention, concatenation, MLB (low-rank bilinear), MFB (factorized bilinear) |
-| Input modalities | All three, Spectrogram + SSL, MFCC + SSL, SSL only, Spectrogram + MFCC (no SSL) |
+**SSL backbone** (co-attention, all three branches)
 
-`python main.py ablations` reports mean ± std across seeds for every variant, with a Wilcoxon signed-rank
-test against the reference model. The test pairs the 25 seed×fold results, which is valid because every
-variant is evaluated on exactly the same test speakers.
+| Model | Precision | Recall | F1 | Accuracy | Specificity | AUC | p (Acc) | p (AUC) |
+|---|---|---|---|---|---|---|---|---|
+| wav2vec2 Base | 92.23 ± 3.16 | 80.40 ± 4.98 | 83.72 ± 2.52 | 85.80 ± 1.79 | 91.20 ± 3.63 | 96.32 ± 0.77 | 0.434 | 0.400 |
+| wav2vec2 XLSR-53 | 92.94 ± 3.43 | 80.80 ± 5.22 | 84.46 ± 3.51 | 86.40 ± 2.41 | 92.00 ± 4.00 | 96.16 ± 0.86 | 0.838 | 0.765 |
+| **HuBERT Base** | 92.33 ± 3.82 | 81.60 ± 4.77 | 84.55 ± 2.51 | 86.40 ± 1.82 | 91.20 ± 4.60 | 96.52 ± 0.76 | – | – |
+
+**Fusion method** (HuBERT Base, all three branches)
+
+| Model | Precision | Recall | F1 | Accuracy | Specificity | AUC | p (Acc) | p (AUC) |
+|---|---|---|---|---|---|---|---|---|
+| Concatenation | 92.18 ± 2.33 | 79.20 ± 4.38 | 82.54 ± 4.33 | 85.00 ± 2.74 | 90.80 ± 3.03 | 95.96 ± 1.37 | 0.339 | 0.598 |
+| MLB | 91.66 ± 3.67 | 80.40 ± 3.85 | 83.20 ± 3.00 | 85.40 ± 2.61 | 90.40 ± 4.56 | 95.60 ± 0.71 | 0.465 | 0.093 |
+| MFB | 91.63 ± 1.87 | 78.40 ± 2.61 | 82.02 ± 2.40 | 84.60 ± 2.30 | 90.80 ± 2.68 | 96.04 ± 1.05 | 0.158 | 0.838 |
+| **Co-attention** | 92.33 ± 3.82 | 81.60 ± 4.77 | 84.55 ± 2.51 | 86.40 ± 1.82 | 91.20 ± 4.60 | 96.52 ± 0.76 | – | – |
+
+**Input modalities** (HuBERT Base)
+
+| Model | Precision | Recall | F1 | Accuracy | Specificity | AUC | p (Acc) | p (AUC) |
+|---|---|---|---|---|---|---|---|---|
+| HuBERT only | 72.56 ± 4.86 | 64.00 ± 9.06 | 63.14 ± 6.08 | 66.80 ± 5.26 | 69.60 ± 12.76 | 77.08 ± 3.92 | <0.001 | <0.001 |
+| MFCC + HuBERT | 73.88 ± 6.41 | 79.60 ± 6.84 | 75.12 ± 5.30 | 73.80 ± 5.97 | 68.00 ± 13.19 | 85.84 ± 2.53 | <0.001 | <0.001 |
+| Spectrogram + MFCC (no SSL) | 91.57 ± 3.06 | 77.60 ± 3.29 | 81.53 ± 2.88 | 83.80 ± 2.68 | 90.00 ± 3.74 | 96.84 ± 0.55 | 0.029 | 0.596 |
+| Spectrogram + HuBERT | 91.59 ± 3.23 | 81.60 ± 3.85 | 84.30 ± 3.77 | 85.60 ± 3.21 | 89.60 ± 4.34 | 96.32 ± 1.35 | 0.626 | 0.766 |
+| **All three (co-attention)** | 92.33 ± 3.82 | 81.60 ± 4.77 | 84.55 ± 2.51 | 86.40 ± 1.82 | 91.20 ± 4.60 | 96.52 ± 0.76 | – | – |
+
+**Takeaways**
+- **Backbone:** the three frozen SSL models perform almost identically, with no significant differences.
+  HuBERT Base gives the highest AUC and the lowest variance across seeds.
+- **Fusion:** co-attention has the best F1, accuracy, recall and AUC, but its margins over concatenation, MLB and
+  MFB (about 1–2 points) are within the seed-to-seed variation and not statistically significant.
+- **Modalities:** the **spectrogram branch is essential**. Every configuration without it drops to 67–74%
+  accuracy. Mean-pooled frozen HuBERT on its own is weak (66.8%). Adding the SSL branch to spectrogram + MFCC
+  raises accuracy (83.8% → 86.4%, *p* = 0.029) and recall, while AUC stays similar.
+
+Run all variants with `python main.py train --experiments all`, and build these tables with
+`python main.py ablations`.
 
 ## Repository structure
 
